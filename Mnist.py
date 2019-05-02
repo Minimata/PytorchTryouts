@@ -10,17 +10,11 @@ from torch import nn, optim
 import torch.nn.functional as F
 from torch.utils.data import TensorDataset, DataLoader
 
-dev = torch.device(
-    "cuda") if torch.cuda.is_available() else torch.device("cpu")
+import torchvision
+from torchvision import transforms
 
+DEV = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
 
-class MnistLogistic(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.lin = nn.Linear(784, 10)
-
-    def forward(self, xb):
-        return self.lin(xb)
 
 class MnistCNN(nn.Module):
     def __init__(self):
@@ -37,10 +31,9 @@ class MnistCNN(nn.Module):
         xb = F.avg_pool2d(xb, 4)
         return xb.view(-1, xb.size(1))
 
-class WrappedDataLoader:
-    def __init__(self, dl, func):
+class MnistDataLoader:
+    def __init__(self, dl):
         self.dl = dl
-        self.func = func
 
     def __len__(self):
         return len(self.dl)
@@ -48,7 +41,11 @@ class WrappedDataLoader:
     def __iter__(self):
         batches = iter(self.dl)
         for b in batches:
-            yield (self.func(*b))
+            yield (MnistDataLoader.preprocess(*b))
+
+    @staticmethod
+    def preprocess(input_batch, output_batch):
+        return input_batch.view(-1, 1, 28, 28).to(DEV), output_batch.to(DEV)
 
 class Lambda(nn.Module):
     def __init__(self, func):
@@ -58,9 +55,31 @@ class Lambda(nn.Module):
     def forward(self, x):
         return self.func(x)
 
+def load_data_set(batch_size=64):
+    root = './data/fashionMNIST'
+    train_set = torchvision.datasets.FashionMNIST(
+        root=root,
+        train=True,
+        download=True,
+        transform=transforms.Compose([transforms.ToTensor()])
+    )
+    train_loader = DataLoader(train_set, batch_size=batch_size, shuffle=True)
 
-def preprocess(x, y):
-    return x.view(-1, 1, 28, 28).to(dev), y.to(dev)
+    validation_set = torchvision.datasets.FashionMNIST(
+        root=root,
+        train=False,
+        download=True,
+        transform=transforms.Compose([transforms.ToTensor()])
+    )
+    validation_loader = DataLoader(validation_set, batch_size=batch_size)
+
+    return MnistDataLoader(train_loader), MnistDataLoader(validation_loader)
+
+def get_data(train_ds, valid_ds, bs):
+    return (
+        DataLoader(train_ds, batch_size=bs, shuffle=True),
+        DataLoader(valid_ds, batch_size=bs * 2),
+    )
 
 def fit(epochs, model, loss_func, opt, train_dl, valid_dl):
     for epoch in range(epochs):
@@ -77,12 +96,6 @@ def fit(epochs, model, loss_func, opt, train_dl, valid_dl):
 
         print(epoch, val_loss)
 
-def get_data(train_ds, valid_ds, bs):
-    return (
-        DataLoader(train_ds, batch_size=bs, shuffle=True),
-        DataLoader(valid_ds, batch_size=bs * 2),
-    )
-
 def loss_batch(model, loss_func, xb, yb, opt=None):
     loss = loss_func(model(xb), yb)
 
@@ -90,6 +103,8 @@ def loss_batch(model, loss_func, xb, yb, opt=None):
         loss.backward()
         opt.step()
         opt.zero_grad()
+    # else:
+    #     print("hello")
 
     return loss.item(), len(xb)
 
@@ -120,7 +135,7 @@ def main():
         loss_func = F.cross_entropy  # loss function
         learning_rate = 0.1  # learning rate
         # learning_rate = 0.5  # learning rate
-        epochs = 2  # how many epochs to train for
+        epochs = 10  # how many epochs to train for
 
         def get_model_CNN():
             model = MnistCNN()
@@ -141,8 +156,8 @@ def main():
                 nn.AdaptiveAvgPool2d(1),
                 Lambda(lambda x: x.view(x.size(0), -1)),
             )
-            model.to(dev)
-            return model, optim.SGD(model.parameters(), lr=learning_rate, momentum=0.9)
+            model.to(DEV)
+            return model, optim.Adam(model.parameters(), lr=learning_rate)
 
         # build tensor
         x_train, y_train, x_valid, y_valid = map(
@@ -151,10 +166,21 @@ def main():
 
         train_ds = TensorDataset(x_train, y_train)
         valid_ds = TensorDataset(x_valid, y_valid)
+        other_train_dl, other_valid_dl = get_data(train_ds, valid_ds, bs=batch_size)
 
-        train_dl, valid_dl = get_data(train_ds, valid_ds, batch_size)
-        train_dl = WrappedDataLoader(train_dl, preprocess)
-        valid_dl = WrappedDataLoader(valid_dl, preprocess)
+        train_dl, valid_dl = load_data_set(batch_size)
+
+        t, v = next(iter(train_dl))
+        print("Train DL: ", t.shape, v.shape)
+        t, v = next(iter(other_train_dl))
+        print("Other DL: ", t.shape, v.shape)
+        t, v = next(iter(valid_dl))
+        print("Valid DL: ", t.shape, v.shape)
+        t, v = next(iter(other_valid_dl))
+        print("Other DL: ", t.shape, v.shape)
+
+        train_dl = MnistDataLoader(train_dl)
+        valid_dl = MnistDataLoader(valid_dl)
 
         model, opt = get_model_custom()
         fit(epochs, model, loss_func, opt, train_dl, valid_dl)
