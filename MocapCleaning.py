@@ -118,6 +118,7 @@ if __name__ == "__main__":
     with open(file, 'rb') as handle:
         reader = c3d.Reader(handle)
         print(reader.header)
+        print(reader.point_labels)
         for p in reader.read_frames():
             marker_frame = torch.tensor(p[1])[:, 0:3]
             points.append(marker_frame)
@@ -132,14 +133,14 @@ if __name__ == "__main__":
 
 
     # training setup
-    batch_size = 50  # batch size
-    loss_func = F.cross_entropy  # loss function
-    learning_rate = 0.001  # learning rate
-    epochs = 10  # how many epochs to train for
-    num_of_classes = 10
-
-    network = OtherNetwork(10).to(DEVICE)
-    adam = optim.Adam(network.parameters(), lr=learning_rate)
-
-    train_dl, validation_dl = load_data_set(batch_size)
+    # batch_size = 50  # batch size
+    # loss_func = F.cross_entropy  # loss function
+    # learning_rate = 0.001  # learning rate
+    # epochs = 10  # how many epochs to train for
+    # num_of_classes = 10
+    #
+    # network = OtherNetwork(10).to(DEVICE)
+    # adam = optim.Adam(network.parameters(), lr=learning_rate)
+    #
+    # train_dl, validation_dl = load_data_set(batch_size)
     # fit(epochs, network, loss_func, train_dl, validation_dl, adam)
