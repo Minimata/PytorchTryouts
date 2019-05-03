@@ -6,32 +6,13 @@ from torch.utils.data import DataLoader
 import torchvision
 from torchvision import transforms
 
+from ezc3d import c3d as ezc3d
+import c3d
+
 torch.set_printoptions(linewidth=120)
 
 DEVICE = torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
 
-
-class Network(nn.Module):
-    def __init__(self):
-        super(Network, self).__init__()
-        self.conv1 = nn.Conv2d(in_channels=1, out_channels=6, kernel_size=5)
-        self.conv2 = nn.Conv2d(in_channels=6, out_channels=12, kernel_size=5)
-
-        self.dense1 = nn.Linear(in_features=12 * 4 * 4, out_features=120)
-        self.dense2 = nn.Linear(in_features=120, out_features=60)
-        self.out = nn.Linear(in_features=60, out_features=10)
-
-    def forward(self, t):
-        t = F.relu(self.conv1(t))
-        t = F.max_pool2d(t, kernel_size=2, stride=2)
-        t = F.relu(self.conv2(t))
-        t = F.max_pool2d(t, kernel_size=2, stride=2)
-
-        t = F.relu(self.dense1(t.reshape(-1, 12 * 4 * 4)))
-        t = F.relu(self.dense2(t))
-        t = self.out(t)
-
-        return t
 
 class OtherNetwork(nn.Module):
     def __init__(self, num_of_class):
@@ -131,21 +112,35 @@ def fit(epochs, model, loss_func, train_dl, valid_dl, opt, scheduler=None):
 
 
 if __name__ == "__main__":
+    file = './data/mocap/20170825_021_uncleaned.c3d'
+
+    points = []
+    with open(file, 'rb') as handle:
+        reader = c3d.Reader(handle)
+        print(reader.header)
+        print(reader.point_labels)
+        for p in reader.read_frames():
+            marker_frame = torch.tensor(p[1])[:, 0:3]
+            points.append(marker_frame)
+
+    points = torch.stack(points)
+    print(points.shape)
+
+    # mocap_uncleaned = ezc3d('./data/mocap/BDE_FACS_0954.c3d')
+    # print(mocap_uncleaned['parameters']['POINT']['USED']['value'][0])  # Print the number of points used
+    # point_data = mocap_uncleaned['data']['points']
+    # analog_data = mocap_uncleaned['data']['analogs']
+
+
     # training setup
-    batch_size = 50  # batch size
-    loss_func = F.cross_entropy  # loss function
-    learning_rate = 0.001  # learning rate
-    epochs = 10  # how many epochs to train for
-    num_of_classes = 10
-
-    # network = Network().to(DEVICE)
-    network = OtherNetwork(10).to(DEVICE)
-    adam = optim.Adam(network.parameters(), lr=learning_rate)
-    SGD = optim.SGD(network.parameters(), lr=learning_rate, momentum=0.9)
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(SGD, patience=1, threshold=0.001, verbose=True)
-
-    train_dl, validation_dl = load_data_set(batch_size)
-    adam_acc = fit(epochs, network, loss_func, train_dl, validation_dl, adam)
-    sgd_acc = fit(epochs, network, loss_func, train_dl, validation_dl, SGD, scheduler)
-
-    print("SGD Accuracy: {} <-> Adam Accuracy: {}".format(sgd_acc, adam_acc))
+    # batch_size = 50  # batch size
+    # loss_func = F.cross_entropy  # loss function
+    # learning_rate = 0.001  # learning rate
+    # epochs = 10  # how many epochs to train for
+    # num_of_classes = 10
+    #
+    # network = OtherNetwork(10).to(DEVICE)
+    # adam = optim.Adam(network.parameters(), lr=learning_rate)
+    #
+    # train_dl, validation_dl = load_data_set(batch_size)
+    # fit(epochs, network, loss_func, train_dl, validation_dl, adam)
