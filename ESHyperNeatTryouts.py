@@ -1,3 +1,5 @@
+import os
+
 import torch
 from torch import nn, optim
 from torch.nn import functional as F
@@ -6,16 +8,24 @@ from torch.utils.data import DataLoader
 import torchvision
 from torchvision import transforms
 
-import c3d
+import gym
+import neat
+
+from pytorch_neat.multi_env_eval import MultiEnvEvaluator
+from pytorch_neat.neat_reporter import LogReporter
+from pytorch_neat.recurrent_net import RecurrentNet
+from pytorch_neat.es_hyperneat import ESNetwork
+from pytorch_neat.substrate import Substrate
+from pytorch_neat.cppn import create_cppn
 
 torch.set_printoptions(linewidth=120)
 
 DEVICE = torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
 
 
-class OtherNetwork(nn.Module):
+class MyCNN(nn.Module):
     def __init__(self, num_of_class):
-        super(OtherNetwork, self).__init__()
+        super(MyCNN, self).__init__()
         self.layer1 = nn.Sequential(
             nn.Conv2d(1, 16, kernel_size=5, stride=1, padding=2),
             nn.BatchNorm2d(16),
@@ -34,8 +44,6 @@ class OtherNetwork(nn.Module):
         out = out.reshape(out.size(0), -1)
         out = self.fc(out)
         return out
-
-
 def load_data_set(batch_size=64):
     root = './data/fashionMNIST'
     train_set = torchvision.datasets.FashionMNIST(
@@ -55,21 +63,15 @@ def load_data_set(batch_size=64):
     validation_loader = DataLoader(validation_set, batch_size=batch_size)
 
     return train_loader, validation_loader
-
-
 def accuracy(out, yb):
     preds = torch.argmax(out, dim=1)
     return (preds == yb).float().mean()
-
-
 def fit(epochs, model, loss_func, train_dl, valid_dl, opt, scheduler=None):
     final_acc = -1
     for epoch in range(epochs):
         model.train()
-        i = 0
         val_loss = 0
-        for images, labels in train_dl:
-            i += 1
+        for i, (images, labels) in enumerate(train_dl):
             images = images.to(DEVICE)
             labels = labels.to(DEVICE)
 
@@ -101,7 +103,7 @@ def fit(epochs, model, loss_func, train_dl, valid_dl, opt, scheduler=None):
                 images = images.to(DEVICE)
                 labels = labels.to(DEVICE)
                 out = model(images)
-                _, predicted = torch.max(out.data, 1)
+                predicted = torch.argmax(out.data, 1)
                 total += labels.size(0)
                 correct += (predicted == labels).sum().item()
                 final_acc = 100 * correct / total
@@ -110,48 +112,92 @@ def fit(epochs, model, loss_func, train_dl, valid_dl, opt, scheduler=None):
     return final_acc
 
 
+max_env_steps = 200
+
+def make_env():
+    env = gym.make("CartPole-v0")
+    return env
+
+def make_net(genome, config, bs):
+    #start by setting up a substrate for this bad cartpole boi
+    params = {"initial_depth": 2,
+              "max_depth": 4,
+              "variance_threshold": 0.00013,
+              "band_threshold": 0.00013,
+              "iteration_level": 3,
+              "division_threshold": 0.00013,
+              "max_weight": 3.0,
+              "activation": "tanh"}
+    input_cords = []
+    output_cords = [(0.0, -1.0, 0.0)]
+    sign = 1
+    for i in range(4):
+        input_cords.append((0.0 - i/10*sign, 1.0, 0.0))
+        sign *= -1
+    leaf_names = []
+    for i in range(3):
+        leaf_names.append('leaf_one_'+str(i))
+        leaf_names.append('leaf_two_'+str(i))
+
+    [cppn] = create_cppn(genome, config, leaf_names, ['cppn_out'])
+    # print(cppn)
+    print(leaf_names)
+    print(config.genome_config.input_keys)
+    net_builder = ESNetwork(Substrate(input_cords, output_cords), cppn, params)
+    net = net_builder.create_phenotype_network_nd()
+    return net
+
+def activate_net(net, states):
+    outputs = net.activate(states).numpy()
+    return outputs[:, 0] > 0.5
+
+
 if __name__ == "__main__":
-    marker_numbers = {
-        'JCO': 56,
-        'AMA': 56,
-        'prop1': 5,
-        'prop2': 3
-    }
-    unclean_frames = clean_frames = {
-        'JCO': [],
-        'AMA': [],
-        'prop1': [],
-        'prop2': []
-    }
-
-    with open('./data/mocap/20170825_021_uncleaned.c3d', 'rb') as unclean, \
-         open('./data/mocap/20170825_021_cleaned.c3d', 'rb') as clean:
-        unclean_reader = c3d.Reader(unclean)
-        clean_reader = c3d.Reader(clean)
-        for unclean_frame, clean_frame in zip(unclean_reader.read_frames(), clean_reader.read_frames()):
-            idx = 0
-            for name, num_mark in marker_numbers.items():
-                unclean_frames[name].append(torch.tensor(unclean_frame[1])[idx:idx+num_mark, 0:3])
-                clean_frames[name].append(torch.tensor(clean_frame[1])[idx:idx+num_mark, 0:3])
-                idx += num_mark
-
-    for name in unclean_frames:
-        print(len(unclean_frames[name]), len(clean_frames[name]))
-        unclean_frames[name] = torch.stack(unclean_frames[name])
-        print(unclean_frames[name].shape)
-        # clean_frames[name] = torch.stack(clean_frames[name])
-        print("{}\t->\tunclean: {}\tclean: {}".format(name, unclean_frames[name].shape, clean_frames[name][0].shape))
-
-
     # training setup
-    batch_size = 50  # batch size
-    loss_func = F.cross_entropy  # loss function
-    learning_rate = 0.001  # learning rate
-    epochs = 10  # how many epochs to train for
+    batch_size = 50
+    loss_func = F.cross_entropy
+    learning_rate = 0.001
+    epochs = 10
     num_of_classes = 10
-  
-    network = OtherNetwork(10).to(DEVICE)
-    adam = optim.Adam(network.parameters(), lr=learning_rate)
+    n_generations = 100
 
     train_dl, validation_dl = load_data_set(batch_size)
-    fit(epochs, network, loss_func, train_dl, validation_dl, adam)
+
+    ### Traditional CNN
+    # network = MyCNN(10).to(DEVICE)
+    # adam = optim.Adam(network.parameters(), lr=learning_rate)
+    # fit(epochs, network, loss_func, train_dl, validation_dl, adam)
+
+    ### ES-HyperNEAT
+    # Load the config file, which is assumed to live in
+    # the same directory as this script.
+    config_path = os.path.join(os.path.dirname(__file__), "neat.cfg")
+    config = neat.Config(
+        neat.DefaultGenome,
+        neat.DefaultReproduction,
+        neat.DefaultSpeciesSet,
+        neat.DefaultStagnation,
+        config_path,
+    )
+
+    evaluator = MultiEnvEvaluator(
+        make_net, 
+        activate_net, 
+        batch_size=batch_size,
+        make_env=make_env, 
+        max_env_steps=max_env_steps
+    )
+
+    def eval_genomes(genomes, config):
+        for _, genome in genomes:
+            genome.fitness = evaluator.eval_genome(genome, config)
+
+    pop = neat.Population(config)
+    stats = neat.StatisticsReporter()
+    pop.add_reporter(stats)
+    reporter = neat.StdOutReporter(True)
+    pop.add_reporter(reporter)
+    logger = LogReporter("neat.log", evaluator.eval_genome)
+    pop.add_reporter(logger)
+
+    pop.run(eval_genomes, n_generations)
