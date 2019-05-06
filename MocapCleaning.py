@@ -6,7 +6,6 @@ from torch.utils.data import DataLoader
 import torchvision
 from torchvision import transforms
 
-from ezc3d import c3d as ezc3d
 import c3d
 
 torch.set_printoptions(linewidth=120)
@@ -112,7 +111,6 @@ def fit(epochs, model, loss_func, train_dl, valid_dl, opt, scheduler=None):
 
 
 if __name__ == "__main__":
-
     unclean = {
         'JRO': [],
         'AMA': [],
@@ -150,19 +148,50 @@ if __name__ == "__main__":
 
     for name, points in clean.items():
         clean[name] = torch.stack(points)
+    #
+    # marker_numbers = {
+    #     'JCO': 56,
+    #     'AMA': 56,
+    #     'prop1': 5,
+    #     'prop2': 3
+    # }
+    # unclean_frames = clean_frames = {
+    #     'JCO': [],
+    #     'AMA': [],
+    #     'prop1': [],
+    #     'prop2': []
+    # }
+    #
+    # with open('./data/mocap/20170825_021_uncleaned.c3d', 'rb') as unclean, \
+    #      open('./data/mocap/20170825_021_cleaned.c3d', 'rb') as clean:
+    #     unclean_reader = c3d.Reader(unclean)
+    #     clean_reader = c3d.Reader(clean)
+    #     for unclean_frame, clean_frame in zip(unclean_reader.read_frames(), clean_reader.read_frames()):
+    #         idx = 0
+    #         for name, num_mark in marker_numbers.items():
+    #             unclean_frames[name].append(torch.tensor(unclean_frame[1])[idx:idx+num_mark, 0:3])
+    #             clean_frames[name].append(torch.tensor(clean_frame[1])[idx:idx+num_mark, 0:3])
+    #             idx += num_mark
+    #
+    # for name in unclean_frames:
+    #     print(len(unclean_frames[name]), len(clean_frames[name]))
+    #     unclean_frames[name] = torch.stack(unclean_frames[name])
+    #     print(unclean_frames[name].shape)
+    #     # clean_frames[name] = torch.stack(clean_frames[name])
+    #     print("{}\t->\tunclean: {}\tclean: {}".format(name, unclean_frames[name].shape, clean_frames[name][0].shape))
 
     for name in unclean:
         print("{} \t- \tunclean: {}, \tclean: {}".format(name, unclean[name].shape, clean[name].shape))
 
     # training setup
-    # batch_size = 50  # batch size
-    # loss_func = F.cross_entropy  # loss function
-    # learning_rate = 0.001  # learning rate
-    # epochs = 10  # how many epochs to train for
-    # num_of_classes = 10
-    #
-    # network = OtherNetwork(10).to(DEVICE)
-    # adam = optim.Adam(network.parameters(), lr=learning_rate)
-    #
-    # train_dl, validation_dl = load_data_set(batch_size)
-    # fit(epochs, network, loss_func, train_dl, validation_dl, adam)
+    batch_size = 50  # batch size
+    loss_func = F.cross_entropy  # loss function
+    learning_rate = 0.001  # learning rate
+    epochs = 10  # how many epochs to train for
+    num_of_classes = 10
+  
+    network = OtherNetwork(10).to(DEVICE)
+    adam = optim.Adam(network.parameters(), lr=learning_rate)
+
+    train_dl, validation_dl = load_data_set(batch_size)
+    fit(epochs, network, loss_func, train_dl, validation_dl, adam)
