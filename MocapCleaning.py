@@ -112,25 +112,47 @@ def fit(epochs, model, loss_func, train_dl, valid_dl, opt, scheduler=None):
 
 
 if __name__ == "__main__":
-    file = './data/mocap/20170825_021_uncleaned.c3d'
 
-    points = []
-    with open(file, 'rb') as handle:
+    unclean = {
+        'JRO': [],
+        'AMA': [],
+        'Prop1': [],
+        'Prop2': []
+    }
+    with open('./data/mocap/20170825_021_uncleaned.c3d', 'rb') as handle:
         reader = c3d.Reader(handle)
-        print(reader.header)
-        print(reader.point_labels)
+        # print(reader.header)
+        # print(reader.point_labels)
         for p in reader.read_frames():
-            marker_frame = torch.tensor(p[1])[:, 0:3]
-            points.append(marker_frame)
+            unclean['JRO'].append(torch.tensor(p[1])[0:56, 0:3])
+            unclean['AMA'].append(torch.tensor(p[1])[56:112, 0:3])
+            unclean['Prop1'].append(torch.tensor(p[1])[112:117, 0:3])
+            unclean['Prop2'].append(torch.tensor(p[1])[117:120, 0:3])
 
-    points = torch.stack(points)
-    print(points.shape)
+    for name, points in unclean.items():
+        unclean[name] = torch.stack(points)
 
-    # mocap_uncleaned = ezc3d('./data/mocap/BDE_FACS_0954.c3d')
-    # print(mocap_uncleaned['parameters']['POINT']['USED']['value'][0])  # Print the number of points used
-    # point_data = mocap_uncleaned['data']['points']
-    # analog_data = mocap_uncleaned['data']['analogs']
+    clean = {
+        'JRO': [],
+        'AMA': [],
+        'Prop1': [],
+        'Prop2': []
+    }
+    with open('./data/mocap/20170825_021_cleaned.c3d', 'rb') as handle:
+        reader = c3d.Reader(handle)
+        # print(reader.header)
+        # print(reader.point_labels)
+        for p in reader.read_frames():
+            clean['JRO'].append(torch.tensor(p[1])[0:56, 0:3])
+            clean['AMA'].append(torch.tensor(p[1])[56:112, 0:3])
+            clean['Prop1'].append(torch.tensor(p[1])[112:117, 0:3])
+            clean['Prop2'].append(torch.tensor(p[1])[117:120, 0:3])
 
+    for name, points in clean.items():
+        clean[name] = torch.stack(points)
+
+    for name in unclean:
+        print("{} \t- \tunclean: {}, \tclean: {}".format(name, unclean[name].shape, clean[name].shape))
 
     # training setup
     # batch_size = 50  # batch size
