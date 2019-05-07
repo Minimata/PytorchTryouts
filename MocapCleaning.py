@@ -1,197 +1,258 @@
 import torch
 from torch import nn, optim
 from torch.nn import functional as F
-from torch.utils.data import DataLoader
-
-import torchvision
-from torchvision import transforms
+from torch.utils.data import Dataset, DataLoader
 
 import c3d
+
+import numpy
 
 torch.set_printoptions(linewidth=120)
 
 DEVICE = torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
 
 
-class OtherNetwork(nn.Module):
-    def __init__(self, num_of_class):
-        super(OtherNetwork, self).__init__()
+class BodyMocapCNN(nn.Module):
+    def __init__(self, num_markers):
+        super(BodyMocapCNN, self).__init__()
+        self.num_markers = num_markers
         self.layer1 = nn.Sequential(
-            nn.Conv2d(1, 16, kernel_size=5, stride=1, padding=2),
+            nn.Conv2d(3, 16, kernel_size=3, stride=1, padding=2),
             nn.BatchNorm2d(16),
             nn.ReLU(),
             nn.MaxPool2d(kernel_size=2, stride=2))
         self.layer2 = nn.Sequential(
-            nn.Conv2d(16, 32, kernel_size=5, stride=1, padding=2),
+            nn.Conv2d(16, 32, kernel_size=3, stride=1, padding=2),
             nn.BatchNorm2d(32),
             nn.ReLU(),
             nn.MaxPool2d(kernel_size=2, stride=2))
-        self.fc = nn.Linear(7 * 7 * 32, num_of_class)
+        # self.layer3 = nn.Sequential(
+        #     nn.Conv2d(32, 64, kernel_size=5, stride=1, padding=2),
+        #     nn.BatchNorm2d(64),
+        #     nn.ReLU(),
+        #     nn.MaxPool2d(kernel_size=2, stride=2))
+        # self.dense1 = nn.Linear(448, 308)
+        # self.dense2 = nn.Linear(378, 308)
+        self.dense3 = nn.Linear(288, 192)
+        self.dense4 = nn.Linear(192, num_markers * 3)
 
     def forward(self, x):
         out = self.layer1(x)
         out = self.layer2(out)
+        # out = self.layer3(out)
         out = out.reshape(out.size(0), -1)
-        out = self.fc(out)
-        return out
-
-
-def load_data_set(batch_size=64):
-    root = './data/fashionMNIST'
-    train_set = torchvision.datasets.FashionMNIST(
-        root=root,
-        train=True,
-        download=True,
-        transform=transforms.Compose([transforms.ToTensor()])
-    )
-    train_loader = DataLoader(train_set, batch_size=batch_size, shuffle=True)
-
-    validation_set = torchvision.datasets.FashionMNIST(
-        root=root,
-        train=False,
-        download=True,
-        transform=transforms.Compose([transforms.ToTensor()])
-    )
-    validation_loader = DataLoader(validation_set, batch_size=batch_size)
-
-    return train_loader, validation_loader
-
-
-def accuracy(out, yb):
-    preds = torch.argmax(out, dim=1)
-    return (preds == yb).float().mean()
-
+        # out = self.dense1(out)
+        # out = self.dense2(out)
+        out = self.dense3(out)
+        out = self.dense4(out)
+        return out.reshape(out.size(0), 3, 7, 8)
 
 def fit(epochs, model, loss_func, train_dl, valid_dl, opt, scheduler=None):
     final_acc = -1
     for epoch in range(epochs):
         model.train()
-        i = 0
         val_loss = 0
-        for images, labels in train_dl:
-            i += 1
-            images = images.to(DEVICE)
-            labels = labels.to(DEVICE)
+        for i, (unclean, clean) in enumerate(train_dl):
+            unclean = unclean.to(DEVICE)
+            clean = clean.to(DEVICE)
 
             opt.zero_grad()
-            out = model(images)
-            loss = loss_func(out, labels)
+
+            out = model(unclean)
+            loss = loss_func(out, clean)
+
             val_loss += loss.item()
             loss.backward()
             opt.step()
 
-            acc = accuracy(out, labels)
-
             # Print loss and accuracy
             if (i + 1) % 100 == 0:
-                print('Epoch [{}/{}], Step [{}/{}], Loss: {:.4f}, Accuracy: {:.2f}%'
-                      .format(epoch + 1, epochs, i + 1, len(train_dl), loss.item(), acc * 100))
+                print('Epoch [{}/{}], Step [{}/{}], Loss: {:.2f}'
+                      .format(epoch + 1, epochs, i + 1, len(train_dl), loss.item()))
 
         if scheduler is not None:
             loss = val_loss / len(train_dl)
-            # print(loss)
+            print(loss)
             scheduler.step(loss)
 
         model.eval()
         with torch.no_grad():
-            correct = 0
-            total = 0
+            for unclean, clean in valid_dl:
+                unclean = unclean.to(DEVICE)
+                clean = clean.to(DEVICE)
+                out = model(unclean)
+                final_acc = loss_func(out, clean)
 
-            for images, labels in valid_dl:
-                images = images.to(DEVICE)
-                labels = labels.to(DEVICE)
-                out = model(images)
-                _, predicted = torch.max(out.data, 1)
-                total += labels.size(0)
-                correct += (predicted == labels).sum().item()
-                final_acc = 100 * correct / total
-
-            print('Epoch [{}/{}], Test Accuracy : {:.2f}%'.format(epoch + 1, epochs, final_acc))
+            print('Epoch [{}/{}], Test Accuracy : {:.2f}'.format(epoch + 1, epochs, final_acc))
     return final_acc
 
+def train(epochs, model, loss_func, train_loaders, valid_loaders, opt):
+    final_mean_distance = -1
+    final_std = 0
+    mean_distance_func = lambda out, target: (target - out).abs().mean().item()
+    std_func = lambda out, target: (target - out).std().item()
+
+    for epoch in range(epochs):
+        final_mean_distance = 0
+        num_valid = 0
+
+        model.train()
+        for i, frame in enumerate(zip(*(train_loaders.values()))):
+            mean = 0
+            std = 0
+            num_frames = 0
+            for actor_frame in frame:
+                unclean = actor_frame[0]
+                clean = actor_frame[1]
+
+                opt.zero_grad()
+                out = model(unclean)
+                loss = loss_func(out, clean)
+                loss.backward()
+                opt.step()
+
+                mean += mean_distance_func(out, clean)
+                std += std_func(out, clean)
+                num_frames += unclean.shape[0]
+
+            # Print loss and accuracy
+            if (i + 1) % 100 == 0:
+                print('Epoch [{}/{}], Step [{}/{}], Mean distance: {:.2f}mm, Standard deviation: {:.2f}mm'
+                      .format(epoch + 1, epochs,
+                              i + 1, len(next(iter(train_loaders.values()))),
+                              mean / num_frames, std / num_frames))
+
+        model.eval()
+        with torch.no_grad():
+            for i, frame in enumerate(zip(*(valid_loaders.values()))):
+                for actor_frame in frame:
+                    unclean = actor_frame[0]
+                    clean = actor_frame[1]
+
+                    out = model(unclean)
+                    final_mean_distance += loss_func(out, clean).item()
+                    final_std += std_func(out, clean)
+                    num_valid += unclean.shape[0]
+
+        final_mean_distance /= num_valid
+        final_std /= num_valid
+        print('Epoch [{}/{}], Validation Mean Distance : {:.2f}mm, Validation Standard Deviation : {:.2f}mm'
+              .format(epoch + 1, epochs, final_mean_distance, final_std))
+    return final_mean_distance, final_std
+
+
+def load_mocap_data(marker_numbers, batch_size, train_data_proportion=0., pure_validation=False):
+    unclean, clean = {}, {}
+    for name in marker_numbers:
+        unclean[name] = []
+        clean[name] = []
+
+    def reshape_to_conv_frame(t):
+        return t.transpose(0, 1).reshape(3, 7, 8)
+
+    with open('./data/mocap/20170825_021_uncleaned.c3d', 'rb') as uncleaned, \
+            open('./data/mocap/20170825_021_cleaned.c3d', 'rb') as cleaned:
+        uncleaned_reader = c3d.Reader(uncleaned)
+        cleaned_reader = c3d.Reader(cleaned)
+        for unclean_frame, clean_frame in zip(uncleaned_reader.read_frames(), cleaned_reader.read_frames()):
+            idx = 0
+            for name, num_mark in marker_numbers.items():
+                base_unclean_frame = torch.tensor(unclean_frame[1], dtype=torch.float32)
+                unclean[name].append(reshape_to_conv_frame(base_unclean_frame[idx:idx + num_mark, 0:3]))
+                base_clean_frame = torch.tensor(clean_frame[1], dtype=torch.float32)
+                clean[name].append(reshape_to_conv_frame(base_clean_frame[idx:idx + num_mark, 0:3]))
+                idx += num_mark
+
+    dataloaders = {}
+    for name in marker_numbers:
+        unclean[name] = torch.stack(unclean[name]).to(DEVICE)
+        clean[name] = torch.stack(clean[name]).to(DEVICE)
+        # print("{} \t- \tunclean: {}, \tclean: {}".format(name, unclean[name].shape, clean[name].shape))
+
+        if pure_validation:
+            valid_ds = MocapDataset(unclean[name], clean[name])
+            dataloaders[name] = DataLoader(valid_ds, batch_size=batch_size)
+        else:
+            training_data_length = int(len(unclean[name]) * train_data_proportion)
+            train_ds = MocapDataset(unclean[name][0:training_data_length], clean[name][0:training_data_length])
+            valid_ds = MocapDataset(unclean[name][training_data_length:len(unclean[name])], clean[name][training_data_length:len(unclean[name])])
+            dataloaders[name] = {
+                "train": DataLoader(train_ds, batch_size=batch_size, shuffle=True),
+                "valid": DataLoader(valid_ds, batch_size=batch_size)
+            }
+
+    return dataloaders
+
+
+class MocapDataset(Dataset):
+    """Mocap dataset"""
+
+    def __init__(self, unclean_frames, clean_frames, transform=None):
+        super(MocapDataset, self).__init__()
+        self.unclean_frames = unclean_frames
+        self.clean_frames = clean_frames
+        self.transform = transform
+
+    def __len__(self):
+        return len(self.unclean_frames)
+
+    def __getitem__(self, index):
+        sample = [self.unclean_frames[index], self.clean_frames[index]]
+        if self.transform is not None:
+            sample = self.transform(sample)
+        return sample
+
+
+def write_c3d_with_model(model, dataloader, file):
+    writer = c3d.Writer()
+    model.eval()
+    with torch.no_grad():
+        for i, actor in enumerate(dataloader):
+            frame = actor[0]  # take the unclean data frame only to give to the model
+            out = model(frame)
+            outs = out.reshape(-1, 3, 56).transpose(1, 2).unbind()
+            null_tensor = torch.zeros(56, 2, dtype=torch.float32, device=DEVICE)
+            np_outs = [torch.cat((t, null_tensor), dim=1).cpu().numpy() for t in outs]
+            for t in np_outs:
+                writer.add_frames([t, numpy.zeros((0, 1))])
+            if (i + 1) % 100 == 0:
+                print('Processed frames [{}/{}]'.format(i + 1, len(dataloader)))
+
+    with open(file, 'wb') as f:
+        print("Writing data to {}...".format(file))
+        writer.write(f)
 
 if __name__ == "__main__":
-    unclean = {
-        'JRO': [],
-        'AMA': [],
-        'Prop1': [],
-        'Prop2': []
-    }
-    with open('./data/mocap/20170825_021_uncleaned.c3d', 'rb') as handle:
-        reader = c3d.Reader(handle)
-        # print(reader.header)
-        # print(reader.point_labels)
-        for p in reader.read_frames():
-            unclean['JRO'].append(torch.tensor(p[1])[0:56, 0:3])
-            unclean['AMA'].append(torch.tensor(p[1])[56:112, 0:3])
-            unclean['Prop1'].append(torch.tensor(p[1])[112:117, 0:3])
-            unclean['Prop2'].append(torch.tensor(p[1])[117:120, 0:3])
-
-    for name, points in unclean.items():
-        unclean[name] = torch.stack(points)
-
-    clean = {
-        'JRO': [],
-        'AMA': [],
-        'Prop1': [],
-        'Prop2': []
-    }
-    with open('./data/mocap/20170825_021_cleaned.c3d', 'rb') as handle:
-        reader = c3d.Reader(handle)
-        # print(reader.header)
-        # print(reader.point_labels)
-        for p in reader.read_frames():
-            clean['JRO'].append(torch.tensor(p[1])[0:56, 0:3])
-            clean['AMA'].append(torch.tensor(p[1])[56:112, 0:3])
-            clean['Prop1'].append(torch.tensor(p[1])[112:117, 0:3])
-            clean['Prop2'].append(torch.tensor(p[1])[117:120, 0:3])
-
-    for name, points in clean.items():
-        clean[name] = torch.stack(points)
-    #
+    # training setup
+    batch_size = 32  # batch size
+    loss_func = lambda out, target: (target - out).abs().mean()
+    learning_rate = 0.001  # learning rate
+    epochs = 100  # how many epochs to train for
     # marker_numbers = {
-    #     'JCO': 56,
+    #     'JRO': 56,
     #     'AMA': 56,
     #     'prop1': 5,
     #     'prop2': 3
     # }
-    # unclean_frames = clean_frames = {
-    #     'JCO': [],
-    #     'AMA': [],
-    #     'prop1': [],
-    #     'prop2': []
-    # }
-    #
-    # with open('./data/mocap/20170825_021_uncleaned.c3d', 'rb') as unclean, \
-    #      open('./data/mocap/20170825_021_cleaned.c3d', 'rb') as clean:
-    #     unclean_reader = c3d.Reader(unclean)
-    #     clean_reader = c3d.Reader(clean)
-    #     for unclean_frame, clean_frame in zip(unclean_reader.read_frames(), clean_reader.read_frames()):
-    #         idx = 0
-    #         for name, num_mark in marker_numbers.items():
-    #             unclean_frames[name].append(torch.tensor(unclean_frame[1])[idx:idx+num_mark, 0:3])
-    #             clean_frames[name].append(torch.tensor(clean_frame[1])[idx:idx+num_mark, 0:3])
-    #             idx += num_mark
-    #
-    # for name in unclean_frames:
-    #     print(len(unclean_frames[name]), len(clean_frames[name]))
-    #     unclean_frames[name] = torch.stack(unclean_frames[name])
-    #     print(unclean_frames[name].shape)
-    #     # clean_frames[name] = torch.stack(clean_frames[name])
-    #     print("{}\t->\tunclean: {}\tclean: {}".format(name, unclean_frames[name].shape, clean_frames[name][0].shape))
+    marker_numbers = {
+        'JRO': 56,
+        'AMA': 56
+    }
 
-    for name in unclean:
-        print("{} \t- \tunclean: {}, \tclean: {}".format(name, unclean[name].shape, clean[name].shape))
+    mocap_dl = load_mocap_data(marker_numbers, batch_size, train_data_proportion=0.9)
+    train_loaders, valid_loaders = {}, {}
+    for name, loaders in mocap_dl.items():
+        train_loaders[name] = loaders['train']
+        valid_loaders[name] = loaders['valid']
 
-    # training setup
-    batch_size = 50  # batch size
-    loss_func = F.cross_entropy  # loss function
-    learning_rate = 0.001  # learning rate
-    epochs = 10  # how many epochs to train for
-    num_of_classes = 10
-  
-    network = OtherNetwork(10).to(DEVICE)
-    adam = optim.Adam(network.parameters(), lr=learning_rate)
+    model = BodyMocapCNN(marker_numbers['JRO']).to(DEVICE)
+    adam = optim.Adam(model.parameters(), lr=learning_rate)
 
-    train_dl, validation_dl = load_data_set(batch_size)
-    fit(epochs, network, loss_func, train_dl, validation_dl, adam)
+    train(epochs, model, loss_func, train_loaders, valid_loaders, adam)
+    torch.save(model, './models/bodymocapCNN.pt')
+
+    dataloaders = load_mocap_data(marker_numbers, batch_size, pure_validation=True)
+    test_model = torch.load('./models/bodymocapCNN.pt', map_location=DEVICE)
+    jro_dl, ama_dl = [dl for name, dl in dataloaders.items()]
+    write_c3d_with_model(test_model, jro_dl, './data/mocap/predicted/20170825_021_predicted_JRO.c3d')
+    write_c3d_with_model(test_model, ama_dl, './data/mocap/predicted/20170825_021_predicted_AMA.c3d')
