@@ -16,75 +16,44 @@ class BodyMocapCNN(nn.Module):
     def __init__(self, num_markers):
         super(BodyMocapCNN, self).__init__()
         self.num_markers = num_markers
-        self.layer1 = nn.Sequential(
-            nn.Conv2d(3, 16, kernel_size=3, stride=1, padding=2),
-            nn.BatchNorm2d(16),
+        self.conv1 = nn.Sequential(
+            nn.Conv1d(3, 16, kernel_size=3, stride=1, padding=2),
+            nn.BatchNorm1d(16),
             nn.ReLU(),
-            nn.MaxPool2d(kernel_size=2, stride=2))
-        self.layer2 = nn.Sequential(
-            nn.Conv2d(16, 32, kernel_size=3, stride=1, padding=2),
-            nn.BatchNorm2d(32),
+            nn.MaxPool1d(kernel_size=2)
+        )
+        self.conv2 = nn.Sequential(
+            nn.Conv1d(16, 32, kernel_size=3, stride=1, padding=2),
+            nn.BatchNorm1d(32),
             nn.ReLU(),
-            nn.MaxPool2d(kernel_size=2, stride=2))
-        # self.layer3 = nn.Sequential(
-        #     nn.Conv2d(32, 64, kernel_size=5, stride=1, padding=2),
-        #     nn.BatchNorm2d(64),
-        #     nn.ReLU(),
-        #     nn.MaxPool2d(kernel_size=2, stride=2))
-        # self.dense1 = nn.Linear(448, 308)
-        # self.dense2 = nn.Linear(378, 308)
-        self.dense3 = nn.Linear(288, 192)
-        self.dense4 = nn.Linear(192, num_markers * 3)
+            nn.MaxPool1d(kernel_size=2)
+        )
+
+        self.dense_input = nn.Linear(168, 1024)
+        self.dense_middle = nn.Linear(1024, 1024)
+        self.dense_output = nn.Linear(1024, 168)
+
+        self.dense_layers = nn.Sequential(
+            self.dense_input,
+            nn.ReLU(),
+            # self.dense_middle,
+            # nn.ReLU(),
+            # self.dense_middle,
+            # nn.ReLU(),
+            # self.dense_middle,
+            # nn.ReLU(),
+            # self.dense_middle,
+            # nn.ReLU(),
+            self.dense_output,
+        )
 
     def forward(self, x):
-        out = self.layer1(x)
-        out = self.layer2(out)
-        # out = self.layer3(out)
-        out = out.reshape(out.size(0), -1)
-        # out = self.dense1(out)
-        # out = self.dense2(out)
-        out = self.dense3(out)
-        out = self.dense4(out)
-        return out.reshape(out.size(0), 3, 7, 8)
+        out = self.conv1(x)
+        out = self.conv2(out)
+        out = x.reshape(out.size(0), -1)
+        out = self.dense_layers(out)
+        return out.reshape(out.size(0), 3, 56)
 
-def fit(epochs, model, loss_func, train_dl, valid_dl, opt, scheduler=None):
-    final_acc = -1
-    for epoch in range(epochs):
-        model.train()
-        val_loss = 0
-        for i, (unclean, clean) in enumerate(train_dl):
-            unclean = unclean.to(DEVICE)
-            clean = clean.to(DEVICE)
-
-            opt.zero_grad()
-
-            out = model(unclean)
-            loss = loss_func(out, clean)
-
-            val_loss += loss.item()
-            loss.backward()
-            opt.step()
-
-            # Print loss and accuracy
-            if (i + 1) % 100 == 0:
-                print('Epoch [{}/{}], Step [{}/{}], Loss: {:.2f}'
-                      .format(epoch + 1, epochs, i + 1, len(train_dl), loss.item()))
-
-        if scheduler is not None:
-            loss = val_loss / len(train_dl)
-            print(loss)
-            scheduler.step(loss)
-
-        model.eval()
-        with torch.no_grad():
-            for unclean, clean in valid_dl:
-                unclean = unclean.to(DEVICE)
-                clean = clean.to(DEVICE)
-                out = model(unclean)
-                final_acc = loss_func(out, clean)
-
-            print('Epoch [{}/{}], Test Accuracy : {:.2f}'.format(epoch + 1, epochs, final_acc))
-    return final_acc
 
 def train(epochs, model, loss_func, train_loaders, valid_loaders, opt):
     final_mean_distance = -1
@@ -148,7 +117,7 @@ def load_mocap_data(marker_numbers, batch_size, train_data_proportion=0., pure_v
         clean[name] = []
 
     def reshape_to_conv_frame(t):
-        return t.transpose(0, 1).reshape(3, 7, 8)
+        return t.transpose(0, 1)
 
     with open('./data/mocap/20170825_021_uncleaned.c3d', 'rb') as uncleaned, \
             open('./data/mocap/20170825_021_cleaned.c3d', 'rb') as cleaned:
@@ -226,7 +195,7 @@ if __name__ == "__main__":
     # training setup
     batch_size = 32  # batch size
     loss_func = lambda out, target: (target - out).abs().mean()
-    learning_rate = 0.001  # learning rate
+    learning_rate = 0.00001  # learning rate
     epochs = 100  # how many epochs to train for
     # marker_numbers = {
     #     'JRO': 56,
@@ -247,6 +216,7 @@ if __name__ == "__main__":
 
     model = BodyMocapCNN(marker_numbers['JRO']).to(DEVICE)
     adam = optim.Adam(model.parameters(), lr=learning_rate)
+
 
     train(epochs, model, loss_func, train_loaders, valid_loaders, adam)
     torch.save(model, './models/bodymocapCNN.pt')
