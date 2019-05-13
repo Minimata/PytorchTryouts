@@ -164,7 +164,7 @@ if __name__ == "__main__":
     train_dl, validation_dl = load_data_set(batch_size)
 
     ### Traditional CNN
-    # network = BodyMocapCNN(10).to(DEVICE)
+    # network = BodyMocap(10).to(DEVICE)
     # adam = optim.Adam(network.parameters(), lr=learning_rate)
     # fit(epochs, network, loss_func, train_dl, validation_dl, adam)
 
